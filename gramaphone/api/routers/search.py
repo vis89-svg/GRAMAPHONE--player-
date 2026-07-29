@@ -51,7 +51,7 @@ async def search_all(
         tracks=[Track.model_validate(t.__dict__) for t in results.get("tracks", [])],
         albums=[Album.model_validate(a.__dict__) for a in results.get("albums", [])],
         artists=[Artist.model_validate(a.__dict__) for a in results.get("artists", [])],
-        playlists=[Playlist.model_validate(p.__dict__) for p in results.get("playlists", [])],
+        playlists=[Playlist.model_validate(p) if isinstance(p, dict) else Playlist.model_validate(p.__dict__) for p in results.get("playlists", [])],
     )
 
 

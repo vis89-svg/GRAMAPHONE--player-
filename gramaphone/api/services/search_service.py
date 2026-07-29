@@ -93,7 +93,16 @@ class SearchService:
                 f"{settings.DEEZER_BASE_URL}/search/playlist",
                 params={"q": query, "limit": limit}
             )
-        return resp.json().get("data", [])
+        data = resp.json().get("data", [])
+        # Map Deezer fields to our schema
+        return [{
+            "playlist_id": str(p.get("id", "")),
+            "title": p.get("title", ""),
+            "creator": p.get("user", {}).get("name", ""),
+            "track_count": p.get("nb_tracks", 0),
+            "artwork_url": p.get("picture", "") or "",
+            "description": "",
+        } for p in data]
 
     # ===== ALBUM-SCOPED SEARCH (KEY FIX) =====
 

@@ -114,48 +114,44 @@ function onPlayerStateChange(e) {
         if (player.track && player.played) {
             api.playTrack(player.track).catch(() => {});
         }
-        // Autoplay: play next in queue or fetch related
-        playNextInQueue();
+        // Autoplay: song ended — play next (with 3s delay for independent)
+        playNextInQueue(false);
     } else if (e.data === YT.PlayerState.CUED) {
         $('player-play-btn').textContent = '▶';
     }
 }
 
-async function playNextInQueue() {
-    // If queue has more items, play next
+async function playNextInQueue(immediate = false) {
+    // If queue has more items, play next immediately
     if (player.queue.length > 0 && player.queueIndex < player.queue.length - 1) {
         player.queueIndex++;
-        const next = player.queue[player.queueIndex];
-        showPlayer(next);
+        showPlayer(player.queue[player.queueIndex]);
         return;
     }
-    // Independent track (no album/playlist context) — fetch related
-    if (!player.context && player.track) {
-        const t = player.track;
-        const name = t.title || t.track || t.track_name || '';
-        const artist = t.artist || t.artist_name || '';
-        const durMs = t.duration_ms || 0;
-        if (name && artist) {
-            try {
-                const res = await fetch(`${API}/recommendations/related?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(name)}&duration_ms=${durMs}&limit=10`, {
-                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-                });
-                const data = await res.json();
-                const related = data.tracks || [];
-                if (related.length) {
-                    player.queue = related;
-                    player.queueIndex = 0;
-                    // Show "Up Next" notification
-                    showUpNext(related[0]);
-                    // Brief delay then play
-                    if (player.autoplayTimer) clearTimeout(player.autoplayTimer);
-                    player.autoplayTimer = setTimeout(() => {
-                        showPlayer(related[0]);
-                    }, 3000);
-                }
-            } catch (e) {}
+    // Queue exhausted — fetch YouTube Radio mix related tracks
+    if (!player.track) return;
+    const t = player.track;
+    const name = t.title || t.track || t.track_name || '';
+    const artist = t.artist || t.artist_name || '';
+    const durMs = t.duration_ms || 0;
+    if (!name || !artist) return;
+    try {
+        const res = await fetch(`${API}/recommendations/related?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(name)}&duration_ms=${durMs}&limit=10`, {
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        });
+        const data = await res.json();
+        const related = data.tracks || [];
+        if (!related.length) return;
+        player.queue = related;
+        player.queueIndex = 0;
+        showUpNext(related[0]);
+        if (player.autoplayTimer) clearTimeout(player.autoplayTimer);
+        if (immediate) {
+            showPlayer(related[0]);
+        } else {
+            player.autoplayTimer = setTimeout(() => showPlayer(related[0]), 3000);
         }
-    }
+    } catch (e) {}
 }
 
 function showUpNext(track) {
@@ -299,11 +295,16 @@ $('player-prev').addEventListener('click', () => {
     }
 });
 $('player-next').addEventListener('click', () => {
+    // Clear autoplay timer if one is running (skip the wait)
+    if (player.autoplayTimer) {
+        clearTimeout(player.autoplayTimer);
+        player.autoplayTimer = null;
+    }
     if (player.queue.length && player.queueIndex < player.queue.length - 1) {
         player.queueIndex++;
         showPlayer(player.queue[player.queueIndex]);
     } else {
-        playNextInQueue();
+        playNextInQueue(true);
     }
 });
 

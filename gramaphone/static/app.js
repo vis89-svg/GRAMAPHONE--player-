@@ -24,6 +24,13 @@ const api = {
     blueprint: () => api.request('POST', '/blueprint/generate'),
     blueprintToday: () => api.request('GET', '/blueprint/today'),
     search: (q, a) => api.request('GET', `/search?q=${encodeURIComponent(q)}${a ? '&album=' + encodeURIComponent(a) : ''}`),
+    playTrack: (t) => api.request('POST', '/playback/complete', {
+        track_id: t.track_id, title: t.title || t.track || t.track_name,
+        artist: t.artist || t.artist_name, album: t.album || t.collection_name,
+        artwork_url: t.artwork_url || t.art_url,
+        completed: true, skipped: false, play_duration_sec: 30,
+        track_duration_sec: t.duration_ms || 180000
+    }),
     playlists: () => api.request('GET', '/playlists'),
     createPlaylist: (n, d) => api.request('POST', '/playlists', { name: n, description: d }),
     deletePlaylist: (id) => api.request('DELETE', `/playlists/${id}`),
@@ -65,6 +72,29 @@ function switchTab(tab) {
 function showError(el, msg) { el.textContent = msg; el.classList.remove('hidden'); }
 function hideError(el) { el.classList.add('hidden'); }
 function $(id) { return document.getElementById(id); }
+
+function trackCardHtml(t, onclick) {
+    const title = t.title || t.track || t.track_name || 'Unknown';
+    const artist = t.artist || t.artist_name || 'Unknown';
+    const album = t.album || t.collection_name || '';
+    const art = t.artwork_url || t.art_url || '';
+    return `<div class="track-card clickable" onclick="${onclick}">
+        ${art ? `<div class="track-art-wrap"><img src="${art}" alt=""><div class="play-overlay">&#9654;</div></div>` : '<div class="track-art-wrap no-art"><div class="play-overlay">&#9654;</div></div>'}
+        <div class="track-info">
+            <div class="track-title">${title}</div>
+            <div class="track-artist">${artist}</div>
+            ${album ? `<div class="track-album">${album}</div>` : ''}
+        </div>
+    </div>`;
+}
+
+async function playTrack(t) {
+    try {
+        await api.playTrack(t);
+    } catch (e) {
+        console.warn('Play log failed:', e);
+    }
+}
 
 // ===== AUTH =====
 let isLogin = true;
@@ -125,16 +155,9 @@ async function loadDashboard() {
             const tracks = bp.seed_tracks || [];
             $('blueprint-tracks').innerHTML = `
                 <h3>Seed Tracks (${tracks.length})</h3>
-                <div class="results-grid">${tracks.map(t => `
-                    <div class="track-card">
-                        ${t.artwork_url ? `<img src="${t.artwork_url}" alt="">` : ''}
-                        <div class="track-info">
-                            <div class="track-title">${t.track}</div>
-                            <div class="track-artist">${t.artist}</div>
-                            <div class="track-album">${t.slot || ''}</div>
-                        </div>
-                    </div>
-                `).join('')}</div>
+                <div class="results-grid">${tracks.map(t =>
+                    trackCardHtml(t, `playTrack(${JSON.stringify(t).replace(/"/g,'&quot;')});this.classList.add('played')`)
+                ).join('')}</div>
             `;
         } else {
             $('blueprint-strategy').innerHTML = '<p>No blueprint yet. Click Refresh to generate one.</p>';
@@ -177,16 +200,9 @@ $('search-form').addEventListener('submit', async e => {
     try {
         const data = await api.search(q, album);
         const tracks = data.tracks || data || [];
-        $('search-results').innerHTML = tracks.length ? tracks.map(t => `
-            <div class="track-card">
-                ${t.artwork_url ? `<img src="${t.artwork_url}" alt="">` : ''}
-                <div class="track-info">
-                    <div class="track-title">${t.track_name || t.track || t.title || 'Unknown'}</div>
-                    <div class="track-artist">${t.artist_name || t.artist || 'Unknown'}</div>
-                    <div class="track-album">${t.collection_name || t.album || ''}</div>
-                </div>
-            </div>
-        `).join('') : '<p>No results found</p>';
+        $('search-results').innerHTML = tracks.length ? tracks.map(t =>
+            trackCardHtml(t, `playTrack(${JSON.stringify(t).replace(/"/g,'&quot;')});this.classList.add('played')`)
+        ).join('') : '<p>No results found</p>';
     } catch (e) {
         $('search-results').innerHTML = `<p class="error">Search failed: ${e.message}</p>`;
     }
@@ -240,16 +256,9 @@ async function showPlaylistDetail(id) {
         const pl = data.playlist || data;
         $('playlist-detail-title').textContent = pl.name || 'Playlist';
         const tracks = pl.tracks || [];
-        $('playlist-tracks').innerHTML = tracks.length ? tracks.map(t => `
-            <div class="track-card">
-                ${t.artwork_url || t.art_url ? `<img src="${t.artwork_url || t.art_url}" alt="">` : ''}
-                <div class="track-info">
-                    <div class="track-title">${t.track_name || t.title || t.track || 'Unknown'}</div>
-                    <div class="track-artist">${t.artist_name || t.artist || 'Unknown'}</div>
-                    <div class="track-album">${t.collection_name || t.album || ''}</div>
-                </div>
-            </div>
-        `).join('') : '<p>Empty playlist</p>';
+        $('playlist-tracks').innerHTML = tracks.length ? tracks.map(t =>
+            trackCardHtml(t, `playTrack(${JSON.stringify(t).replace(/"/g,'&quot;')});this.classList.add('played')`)
+        ).join('') : '<p>Empty playlist</p>';
     } catch (e) {
         $('playlist-tracks').innerHTML = `<p class="error">Failed to load playlist</p>`;
     }

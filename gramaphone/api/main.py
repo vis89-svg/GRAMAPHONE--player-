@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from api.config import settings
 from api.dependencies.database import init_db, close_db
@@ -62,11 +63,6 @@ async def health_check():
     return {"status": "healthy", "service": "gramaphone-api"}
 
 
-@app.get("/")
-async def root():
-    return {
-        "name": "Gramaphone API",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "health": "/health"
-    }
+import os
+static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
+app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")

@@ -25,6 +25,8 @@ const api = {
     blueprintToday: () => api.request('GET', '/blueprint/today'),
     search: (q) => api.request('GET', `/search?q=${encodeURIComponent(q)}&type=all`),
     albumTracks: (id, artist) => api.request('GET', `/search/album/${id}/tracks${artist ? '?artist=' + encodeURIComponent(artist) : ''}`),
+    relatedTracks: (artist, title, durMs) => api.request('GET', `/recommendations/related?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}&duration_ms=${durMs || 0}&limit=10`),
+    aiPlaylist: (prompt, count) => api.request('POST', '/playlists/ai-generate', { prompt, count }),
     playTrack: (t) => api.request('POST', '/playback/complete', {
         track_id: t.track_id, title: t.title || t.track || t.track_name,
         artist: t.artist || t.artist_name, album: t.album || t.collection_name,
@@ -75,7 +77,11 @@ function hideError(el) { el.classList.add('hidden'); }
 function $(id) { return document.getElementById(id); }
 
 // ===== YOUTUBE PLAYER (Spotify-style, audio only) =====
-const player = { yt: null, track: null, queue: [], queueIndex: -1, played: false, progressTimer: null };
+const player = {
+    yt: null, track: null, queue: [], queueIndex: -1,
+    played: false, progressTimer: null, autoplayTimer: null,
+    context: null, contextData: null
+};
 
 function initYTPlayer() {
     if (player.yt) return;
@@ -108,8 +114,56 @@ function onPlayerStateChange(e) {
         if (player.track && player.played) {
             api.playTrack(player.track).catch(() => {});
         }
+        // Autoplay: play next in queue or fetch related
+        playNextInQueue();
     } else if (e.data === YT.PlayerState.CUED) {
         $('player-play-btn').textContent = '▶';
+    }
+}
+
+async function playNextInQueue() {
+    // If queue has more items, play next
+    if (player.queue.length > 0 && player.queueIndex < player.queue.length - 1) {
+        player.queueIndex++;
+        const next = player.queue[player.queueIndex];
+        showPlayer(next);
+        return;
+    }
+    // Independent track (no album/playlist context) — fetch related
+    if (!player.context && player.track) {
+        const t = player.track;
+        const name = t.title || t.track || t.track_name || '';
+        const artist = t.artist || t.artist_name || '';
+        const durMs = t.duration_ms || 0;
+        if (name && artist) {
+            try {
+                const res = await fetch(`${API}/recommendations/related?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(name)}&duration_ms=${durMs}&limit=10`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+                });
+                const data = await res.json();
+                const related = data.tracks || [];
+                if (related.length) {
+                    player.queue = related;
+                    player.queueIndex = 0;
+                    // Show "Up Next" notification
+                    showUpNext(related[0]);
+                    // Brief delay then play
+                    if (player.autoplayTimer) clearTimeout(player.autoplayTimer);
+                    player.autoplayTimer = setTimeout(() => {
+                        showPlayer(related[0]);
+                    }, 3000);
+                }
+            } catch (e) {}
+        }
+    }
+}
+
+function showUpNext(track) {
+    const el = $('player-upnext');
+    if (el) {
+        el.innerHTML = `Up Next: ${track.title || track.track || ''} — ${track.artist || track.artist_name || ''}`;
+        el.classList.remove('hidden');
+        setTimeout(() => el.classList.add('hidden'), 5000);
     }
 }
 
@@ -194,6 +248,30 @@ function showPlayer(track) {
 
 async function playTrackInYT(track, el) {
     if (el) el.classList.add('played');
+    // Determine context from the clicked element
+    const card = el && el.closest ? el.closest('.track-card.clickable') : null;
+    if (card) {
+        const listId = card.dataset.list;
+        if (listId === 'album') {
+            player.context = 'album';
+            player.contextData = window._albumTracks || [];
+            player.queue = player.contextData;
+            player.queueIndex = parseInt(card.dataset.index);
+        } else if (listId === 'playlist') {
+            player.context = 'playlist';
+            player.contextData = window._playlistTracks || [];
+            player.queue = player.contextData;
+            player.queueIndex = parseInt(card.dataset.index);
+        } else {
+            player.context = null;
+            player.contextData = null;
+            player.queue = [];
+            player.queueIndex = -1;
+        }
+    } else {
+        player.context = null;
+        player.contextData = null;
+    }
     showPlayer(track);
 }
 
@@ -214,8 +292,20 @@ $('player-progress').addEventListener('input', function () {
     }
 });
 
-$('player-prev').addEventListener('click', () => {});
-$('player-next').addEventListener('click', () => {});
+$('player-prev').addEventListener('click', () => {
+    if (player.queue.length && player.queueIndex > 0) {
+        player.queueIndex--;
+        showPlayer(player.queue[player.queueIndex]);
+    }
+});
+$('player-next').addEventListener('click', () => {
+    if (player.queue.length && player.queueIndex < player.queue.length - 1) {
+        player.queueIndex++;
+        showPlayer(player.queue[player.queueIndex]);
+    } else {
+        playNextInQueue();
+    }
+});
 
 $('player-close').addEventListener('click', () => {
     if (player.yt && player.yt.stopVideo) player.yt.stopVideo();
@@ -460,6 +550,27 @@ async function loadAlbumDetail(album) {
     }
 }
 
+// ===== AI PLAYLIST GENERATOR =====
+$('ai-generate-btn').addEventListener('click', async () => {
+    const prompt = $('ai-prompt').value.trim();
+    if (!prompt) return;
+    $('ai-generate-btn').disabled = true;
+    $('ai-generate-btn').textContent = 'Generating...';
+    $('ai-status').classList.remove('hidden');
+    $('ai-status').textContent = '🧠 AI is crafting your playlist...';
+    try {
+        const result = await api.aiPlaylist(prompt, 15);
+        $('ai-status').textContent = `✅ Created "${result.name}" with ${result.track_count} tracks!`;
+        $('ai-prompt').value = '';
+        loadPlaylists();
+    } catch (e) {
+        $('ai-status').textContent = `❌ Failed: ${e.message}`;
+    }
+    $('ai-generate-btn').disabled = false;
+    $('ai-generate-btn').textContent = 'Generate';
+    setTimeout(() => $('ai-status').classList.add('hidden'), 6000);
+});
+
 // ===== PLAYLISTS =====
 let currentPlaylistId = null;
 
@@ -576,6 +687,33 @@ async function loadProfile() {
                 `).join('') : '<p>No data yet</p>'}
             `;
         }
+
+        // Load auto-playlists (mixes)
+        try {
+            const pls = await api.playlists();
+            const mixes = (pls || []).filter(p => p.source && p.source.startsWith('auto_'));
+            const userPls = (pls || []).filter(p => !p.source || !p.source.startsWith('auto_'));
+            if (mixes.length) {
+                $('profile-mixes-list').innerHTML = mixes.map(p => `
+                    <div class="stat-row" style="cursor:pointer;" data-pl-id="${p.id}">
+                        <span class="stat-label">${p.name}</span>
+                        <span class="stat-value">${p.track_count} tracks</span>
+                    </div>
+                `).join('');
+                document.querySelectorAll('#profile-mixes-list .stat-row').forEach(el => {
+                    el.addEventListener('click', () => {
+                        // Switch to playlists tab and show the mix
+                        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                        document.querySelector('[data-tab="playlists"]').classList.add('active');
+                        document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
+                        $('playlists-page').classList.remove('hidden');
+                        showPlaylistDetail(el.dataset.plId);
+                    });
+                });
+            } else {
+                $('profile-mixes-list').innerHTML = '<p>No mixes yet. Keep listening!</p>';
+            }
+        } catch (e) {}
     } catch (e) {
         $('profile-stats').innerHTML = `<p class="error">Failed to load profile</p>`;
     }

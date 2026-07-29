@@ -304,6 +304,54 @@ class SearchService:
             return await asyncio.get_event_loop().run_in_executor(None, _extract_playlist, entry)
         return None, []
 
+    async def get_related_tracks(self, artist: str, title: str, duration_ms: int = 0) -> list[dict]:
+        """Get related tracks using YouTube related videos + iTunes fallback."""
+        search_term = f"{artist} {title}"
+        video_id = None
+        yt_tracks = []
+
+        # First try to find the video_id for this track
+        yt = await asyncio.get_event_loop().run_in_executor(
+            None, self._find_best_yt_sync, title, artist, duration_ms
+        )
+        if yt and yt.get("video_id"):
+            video_id = yt["video_id"]
+            related = await asyncio.get_event_loop().run_in_executor(
+                None, self._get_related_yt_sync, video_id, 15
+            )
+            for r in related:
+                yt_tracks.append({
+                    "track_id": "",
+                    "title": r.get("title", ""),
+                    "artist": r.get("channel", ""),
+                    "album": "",
+                    "artwork_url": r.get("thumbnail", ""),
+                    "duration_ms": r.get("duration", 0) * 1000,
+                    "video_id": r.get("video_id", ""),
+                    "source": "youtube_related",
+                })
+
+        # Fallback: search iTunes for same-artist tracks
+        if len(yt_tracks) < 5:
+            try:
+                same_artist = await self.search_tracks(artist, limit=10)
+                for t in same_artist:
+                    if t.title.lower() != title.lower():
+                        yt_tracks.append({
+                            "track_id": t.track_id,
+                            "title": t.title,
+                            "artist": t.artist,
+                            "album": t.album,
+                            "artwork_url": t.artwork_url,
+                            "duration_ms": t.duration_ms,
+                            "video_id": "",
+                            "source": "itunes",
+                        })
+            except Exception:
+                pass
+
+        return yt_tracks[:20]
+
     def _find_best_yt_sync(self, title: str, artist: str, duration_ms: int) -> Optional[dict]:
         """Synchronous YouTube search + scoring (runs in executor)."""
         queries = [
@@ -350,6 +398,51 @@ class SearchService:
 
         best = pick_best_yt_version(unique, duration_ms // 1000)
         return best
+
+    def _get_related_yt_sync(self, video_id: str, max_results: int = 20) -> list[dict]:
+        """Synchronous YouTube related videos extraction (runs in executor).
+        Uses ytsearch with 'mix' or artist+title terms since yt-dlp's related_videos is unreliable."""
+        results = []
+        # Get the current video's metadata first
+        try:
+            with YoutubeDL({"quiet": True, "skip_download": True, "no_warnings": True}) as ydl:
+                info = ydl.extract_info(f"https://youtube.com/watch?v={video_id}", download=False)
+                if info:
+                    title = info.get("title", "")
+                    channel = info.get("channel", "") or info.get("uploader", "")
+                    # Search for "mix" of this track
+                    search_terms = [
+                        f"{channel} {title} mix",
+                        f"{channel} similar songs",
+                        f"{title} related",
+                    ]
+                    for term in search_terms:
+                        try:
+                            sr = ydl.extract_info(f"ytsearch10:{term}", download=False)
+                            entries = sr.get("entries", []) if sr else []
+                            for e in entries:
+                                if e and e.get("id") and e["id"] != video_id:
+                                    tl = (e.get("title", "") + " " + (e.get("channel", "") or e.get("uploader", "") or "")).lower()
+                                    blocked = ["karaoke", "instrumental", "nightcore", "sped up", "sped-up",
+                                               "slowed", "bass boosted", "8d audio", "reverb", "reaction"]
+                                    if any(b in tl for b in blocked):
+                                        continue
+                                    vid = e["id"]
+                                    if not any(r["video_id"] == vid for r in results):
+                                        results.append({
+                                            "video_id": vid,
+                                            "title": e.get("title", ""),
+                                            "channel": e.get("channel", "") or e.get("uploader", ""),
+                                            "duration": e.get("duration", 0),
+                                            "thumbnail": e.get("thumbnail", ""),
+                                        })
+                                        if len(results) >= max_results:
+                                            return results
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+        return results
 
     # ===== INTERNAL =====
 

@@ -68,6 +68,14 @@
                     <button id="create-playlist">Create</button>
                     <button id="cancel-playlist">Cancel</button>
                 </div>
+                <div id="ai-playlist-section" class="card" style="margin:12px 0;">
+                    <h3>AI Playlist Generator</h3>
+                    <div style="display:flex;gap:8px;margin-top:8px;">
+                        <input type="text" id="ai-prompt" placeholder="e.g. chill Sunday morning vibes, workout mix 2024..." style="flex:1;">
+                        <button id="ai-generate-btn" class="btn">Generate</button>
+                    </div>
+                    <div id="ai-status" class="hidden" style="margin-top:8px;font-size:0.9rem;"></div>
+                </div>
                 <div id="playlists-list"></div>
                 <div id="playlist-detail" class="hidden">
                     <h3 id="playlist-detail-title"></h3>
@@ -81,6 +89,10 @@
                 <div id="profile-stats" class="card"></div>
                 <div id="profile-top-artists" class="card"></div>
                 <div id="profile-genres" class="card"></div>
+                <div id="profile-mixes" class="card">
+                    <h3>Your Mixes</h3>
+                    <div id="profile-mixes-list"></div>
+                </div>
             </section>
         </main>
 
@@ -109,6 +121,7 @@
             <div class="player-right">
                 <button id="player-close">✕</button>
             </div>
+            <div id="player-upnext" class="player-upnext hidden"></div>
         </div>
     </div>
     <script src="/app.js"></script>

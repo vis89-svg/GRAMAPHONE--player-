@@ -1,3 +1,4 @@
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -7,12 +8,17 @@ import uuid
 
 from api.dependencies.database import get_db
 from api.dependencies.auth import get_current_profile
-from api.models import Profile, Playlist, PlaylistTrack, ListeningHistory
+from api.models import Profile, Playlist, PlaylistTrack, ListeningHistory, DailyBlueprint
 from api.services.playlist_service import (
     create_playlist, get_playlist, get_user_playlists, 
-    smart_merge_playlist, refresh_auto_playlist
+    smart_merge_playlist, refresh_auto_playlist, add_tracks_to_playlist
 )
-from api.services.affinity_service import get_collaborative_recommendations
+from api.services.affinity_service import (
+    get_top_affinity_artists, get_taste_profile, get_recent_plays,
+    get_completion_stats
+)
+from api.services.search_service import SearchService
+from api.services.blueprint_service import blueprint_service
 
 router = APIRouter(prefix="/playlists", tags=["playlists"])
 
@@ -33,6 +39,124 @@ class TrackAdd(BaseModel):
     artist: str
     album: Optional[str] = None
     artwork_url: Optional[str] = None
+
+
+class AIPlaylistRequest(BaseModel):
+    prompt: str
+    count: int = 15
+
+
+AI_PLAYLIST_SYSTEM = """You are a music playlist curator. Given a user's request and their listening profile, generate a list of real songs as JSON.
+
+Rules:
+- Output ONLY valid JSON array of objects with "artist" and "title" fields
+- Each track must be a REAL, existing song
+- Match the user's requested mood/genre/theme
+- Use the user's listening profile for personalization
+- Recommend at most {count} tracks"""
+
+AI_PLAYLIST_USER = """User Request: {prompt}
+
+User Profile:
+- Top Artists: {top_artists}
+- Top Genres: {top_genres}
+- Recent Plays: {recent_plays}
+
+Generate {count} real tracks as a JSON array: [{{"artist": "...", "title": "..."}}, ...]"""
+
+
+@router.post("/ai-generate")
+async def ai_generate_playlist(
+    data: AIPlaylistRequest,
+    profile: Profile = Depends(get_current_profile),
+    db: AsyncSession = Depends(get_db)
+):
+    """Generate a playlist using AI based on a text prompt + user profile."""
+    from openai import AsyncOpenAI
+    import instructor
+    from pydantic import BaseModel, Field
+
+    if not blueprint_service._get_client():
+        raise HTTPException(503, "AI service not available (no Groq API key)")
+
+    class AITrack(BaseModel):
+        artist: str
+        title: str
+
+    class AIPlaylistResponse(BaseModel):
+        tracks: list[AITrack] = Field(min_items=5, max_items=25)
+        name: str
+
+    # Gather user context
+    top_artists = []
+    top_genres = []
+    recent_plays = []
+    try:
+        top_artists = await get_top_affinity_artists(db, profile.id, 5)
+    except Exception:
+        pass
+    try:
+        top_genres = await get_taste_profile(db, profile.id, 3)
+    except Exception:
+        pass
+    try:
+        recent_plays = await get_recent_plays(db, profile.id, 10)
+    except Exception:
+        pass
+
+    client = blueprint_service._get_client()
+    try:
+        response = await client.chat.completions.create(
+            model=blueprint_service.model,
+            response_model=AIPlaylistResponse,
+            messages=[
+                {"role": "system", "content": AI_PLAYLIST_SYSTEM.format(count=data.count)},
+                {"role": "user", "content": AI_PLAYLIST_USER.format(
+                    prompt=data.prompt,
+                    top_artists=json.dumps(top_artists),
+                    top_genres=json.dumps(top_genres),
+                    recent_plays=json.dumps(recent_plays),
+                    count=data.count,
+                )}
+            ],
+            temperature=0.8,
+            max_tokens=2048
+        )
+
+        # Hydrate tracks with iTunes metadata
+        search = SearchService()
+        hydrated = []
+        for t in response.tracks:
+            try:
+                it = await search.search_tracks(f"{t.artist} {t.title}", limit=1)
+                if it:
+                    tt = it[0]
+                    hydrated.append({
+                        "track_id": tt.track_id,
+                        "title": tt.title,
+                        "artist": tt.artist,
+                        "album": tt.album,
+                        "artwork_url": tt.artwork_url,
+                        "duration_ms": tt.duration_ms,
+                    })
+                else:
+                    hydrated.append({"title": t.title, "artist": t.artist})
+            except Exception:
+                hydrated.append({"title": t.title, "artist": t.artist})
+
+        # Create the playlist
+        playlist = await create_playlist(db, profile.id, response.name, "ai_generated", hydrated)
+        await db.commit()
+
+        return {
+            "id": str(playlist.id),
+            "name": playlist.name,
+            "track_count": len(hydrated),
+            "tracks": hydrated
+        }
+
+    except Exception as e:
+        raise HTTPException(500, f"AI playlist generation failed: {e}")
 
 
 @router.post("", response_model=dict)
@@ -136,8 +260,6 @@ async def add_tracks(
     if smart:
         result = await smart_merge_playlist(db, playlist_id, [t.model_dump() for t in tracks])
     else:
-        # Simple add
-        from api.services.playlist_service import add_tracks_to_playlist
         result = {"added": await add_tracks_to_playlist(db, playlist_id, [t.model_dump() for t in tracks])}
     
     await db.commit()

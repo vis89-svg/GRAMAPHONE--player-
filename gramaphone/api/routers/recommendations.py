@@ -318,6 +318,33 @@ async def get_suggested_tracks(
     return {"tracks": filtered}
 
 
+@router.get("/related")
+async def get_related_tracks(
+    artist: str = Query(...),
+    title: str = Query(...),
+    duration_ms: int = Query(0),
+    limit: int = Query(15, le=30),
+    profile: Profile = Depends(get_current_profile),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get related tracks for autoplay. Uses YouTube related videos + iTunes fallback."""
+    search = SearchService()
+    tracks = await search.get_related_tracks(artist, title, duration_ms)
+
+    # Deduplicate and limit
+    seen = set()
+    deduped = []
+    for t in tracks:
+        key = f"{t['title']}||{t['artist']}"
+        if key not in seen:
+            seen.add(key)
+            deduped.append(t)
+            if len(deduped) >= limit:
+                break
+
+    return {"tracks": deduped, "seed": {"artist": artist, "title": title}}
+
+
 @router.get("/blueprint/today")
 async def get_today_blueprint_endpoint(
     profile: Profile = Depends(get_current_profile),

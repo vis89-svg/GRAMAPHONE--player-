@@ -140,6 +140,15 @@ button[type="submit"]:hover, .btn:hover { opacity: 0.85; }
 
 .album-tracks { border-top: 1px solid var(--border); padding-top: 8px; }
 .album-track { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: var(--radius); border: none; margin-bottom: 2px; }
+
+.player-upnext {
+    position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+    background: var(--accent); color: #fff; padding: 6px 16px;
+    border-radius: 20px; font-size: 0.8rem; white-space: nowrap;
+    max-width: 80vw; overflow: hidden; text-overflow: ellipsis;
+    animation: slideUp 0.3s ease; z-index: 100;
+}
+@keyframes slideUp { from { opacity: 0; transform: translateX(-50%) translateY(10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
 .album-track:hover { background: var(--surface); border-color: transparent; }
 .track-num { width: 24px; text-align: right; color: var(--text-dim); font-size: 0.85rem; flex-shrink: 0; }
 .track-duration { color: var(--text-dim); font-size: 0.85rem; flex-shrink: 0; margin-left: auto; }

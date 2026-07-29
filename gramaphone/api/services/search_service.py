@@ -400,46 +400,40 @@ class SearchService:
         return best
 
     def _get_related_yt_sync(self, video_id: str, max_results: int = 20) -> list[dict]:
-        """Synchronous YouTube related videos extraction (runs in executor).
-        Uses ytsearch with 'mix' or artist+title terms since yt-dlp's related_videos is unreliable."""
+        """Extract YouTube's algorithmically-determined Up Next queue using the Radio mix playlist.
+        YouTube's 'RD' (Radio) playlist is exactly what YouTube suggests after a video ends.
+        Append '&list=RD{VIDEO_ID}' to any watch URL to get it."""
         results = []
-        # Get the current video's metadata first
+        # YouTube Radio mix: &list=RD{VIDEO_ID} generates an algorithmic mix
+        # starting with the actual "Up Next" suggestion at entry 0.
+        radio_url = f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}"
         try:
-            with YoutubeDL({"quiet": True, "skip_download": True, "no_warnings": True}) as ydl:
-                info = ydl.extract_info(f"https://youtube.com/watch?v={video_id}", download=False)
-                if info:
-                    title = info.get("title", "")
-                    channel = info.get("channel", "") or info.get("uploader", "")
-                    # Search for "mix" of this track
-                    search_terms = [
-                        f"{channel} {title} mix",
-                        f"{channel} similar songs",
-                        f"{title} related",
-                    ]
-                    for term in search_terms:
-                        try:
-                            sr = ydl.extract_info(f"ytsearch10:{term}", download=False)
-                            entries = sr.get("entries", []) if sr else []
-                            for e in entries:
-                                if e and e.get("id") and e["id"] != video_id:
-                                    tl = (e.get("title", "") + " " + (e.get("channel", "") or e.get("uploader", "") or "")).lower()
-                                    blocked = ["karaoke", "instrumental", "nightcore", "sped up", "sped-up",
-                                               "slowed", "bass boosted", "8d audio", "reverb", "reaction"]
-                                    if any(b in tl for b in blocked):
-                                        continue
-                                    vid = e["id"]
-                                    if not any(r["video_id"] == vid for r in results):
-                                        results.append({
-                                            "video_id": vid,
-                                            "title": e.get("title", ""),
-                                            "channel": e.get("channel", "") or e.get("uploader", ""),
-                                            "duration": e.get("duration", 0),
-                                            "thumbnail": e.get("thumbnail", ""),
-                                        })
-                                        if len(results) >= max_results:
-                                            return results
-                        except Exception:
+            with YoutubeDL({
+                "quiet": True, "extract_flat": "in_playlist",
+                "skip_download": True, "no_warnings": True,
+            }) as ydl:
+                info = ydl.extract_info(radio_url, download=False)
+                if info and info.get("entries"):
+                    for e in info["entries"]:
+                        if not e or not e.get("id"):
                             continue
+                        if e["id"] == video_id:
+                            continue
+                        tl = (e.get("title", "") + " " + (e.get("channel", "") or e.get("uploader", "") or "")).lower()
+                        blocked = ["karaoke", "instrumental", "nightcore", "sped up", "sped-up",
+                                   "slowed", "bass boosted", "8d audio", "reverb", "reaction",
+                                   "cover", "remix", "live"]
+                        if any(b in tl for b in blocked):
+                            continue
+                        results.append({
+                            "video_id": e["id"],
+                            "title": e.get("title", ""),
+                            "channel": e.get("channel", "") or e.get("uploader", ""),
+                            "duration": e.get("duration", 0),
+                            "thumbnail": e.get("thumbnail", ""),
+                        })
+                        if len(results) >= max_results:
+                            break
         except Exception:
             pass
         return results

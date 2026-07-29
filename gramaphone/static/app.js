@@ -24,7 +24,7 @@ const api = {
     blueprint: () => api.request('POST', '/blueprint/generate'),
     blueprintToday: () => api.request('GET', '/blueprint/today'),
     search: (q) => api.request('GET', `/search?q=${encodeURIComponent(q)}&type=all`),
-    albumWithYT: (id, artist) => api.request('GET', `/search/album/${id}/tracks-with-youtube${artist ? '?artist=' + encodeURIComponent(artist) : ''}`),
+    albumTracks: (id, artist) => api.request('GET', `/search/album/${id}/tracks${artist ? '?artist=' + encodeURIComponent(artist) : ''}`),
     playTrack: (t) => api.request('POST', '/playback/complete', {
         track_id: t.track_id, title: t.title || t.track || t.track_name,
         artist: t.artist || t.artist_name, album: t.album || t.collection_name,
@@ -410,7 +410,7 @@ async function loadAlbumDetail(album) {
     $('album-detail').classList.remove('hidden');
     $('album-detail').innerHTML = '<div class="spinner"></div>';
     try {
-        const data = await api.albumWithYT(album.album_id, album.artist);
+        const data = await api.albumTracks(album.album_id, album.artist);
         const a = data.album;
         const tracks = data.tracks || [];
 
@@ -429,39 +429,18 @@ async function loadAlbumDetail(album) {
                 </div>
             </div>
             <div class="album-tracks">
-                ${tracks.length ? tracks.map((t, i) => {
-                    const hasYT = t.youtube_video_id ? true : false;
-                    return `<div class="track-card clickable album-track" data-index="${i}" data-list="album">
+                ${tracks.length ? tracks.map((t, i) => `
+                    <div class="track-card clickable album-track" data-index="${i}" data-list="album">
                         <div class="track-num">${i + 1}</div>
                         <div class="track-info">
                             <div class="track-title">${t.title}</div>
                             <div class="track-artist">${t.artist || a.artist}</div>
                         </div>
                         <div class="track-duration">${formatTime(t.duration_ms / 1000)}</div>
-                        ${hasYT ? '<div class="track-yt-indicator">▶</div>' : '<div class="track-yt-indicator na">—</div>'}
-                    </div>`;
-                }).join('') : '<p>No tracks found</p>'}
+                    </div>
+                `).join('') : '<p>No tracks found</p>'}
             </div>
         `;
-
-        // Handle track clicks in album
-        document.querySelectorAll('.album-track').forEach(el => {
-            el.addEventListener('click', () => {
-                const idx = parseInt(el.dataset.index);
-                const t = window._albumTracks[idx];
-                if (t && t.youtube_video_id) {
-                    el.classList.add('played');
-                    showPlayer({
-                        title: t.title,
-                        artist: t.artist,
-                        artwork_url: album.artwork_url || '',
-                        track_id: t.track_id,
-                        duration_ms: t.duration_ms,
-                        video_id: t.youtube_video_id,
-                    });
-                }
-            });
-        });
 
         document.getElementById('back-to-results').addEventListener('click', () => {
             $('album-detail').classList.add('hidden');

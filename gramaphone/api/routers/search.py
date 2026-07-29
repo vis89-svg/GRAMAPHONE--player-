@@ -5,7 +5,7 @@ from api.dependencies.database import get_db
 from api.services.search_service import SearchService, pick_best_yt_version
 from api.schemas.search import (
     SearchResult, Track, Album, Artist, Playlist,
-    AlbumTracksResponse, AlbumWithYTResponse, AlbumTrackWithYT,
+    AlbumTracksResponse,
     YouTubeSearchResult, YouTubeVersion,
     SearchSuggestionsResponse, SearchQuery
 )
@@ -56,40 +56,23 @@ async def search_all(
     )
 
 
-@router.get("/album/{album_id}/tracks-with-youtube", response_model=AlbumWithYTResponse)
-async def get_album_tracks_with_youtube(
+@router.get("/album/{album_id}/tracks", response_model=AlbumTracksResponse)
+async def get_album_tracks_by_id(
     album_id: str,
     artist: str = Query(""),
     service: SearchService = Depends(get_search_service),
 ):
-    """Get album tracks with best YouTube versions.
-    Tries iTunes first. Falls back to YouTube playlist discovery for all regions/languages."""
+    """Get album tracks. Tries iTunes first (fast), falls back to YouTube playlist discovery for all regions/languages.
+    YouTube video IDs resolved on-demand during playback."""
     result = await service.get_album_tracks_with_youtube(album_id, artist)
     if not result["album"]:
         raise HTTPException(404, "Album not found")
     alb = result["album"]
     if not isinstance(alb, dict):
         alb = alb.__dict__
-    return AlbumWithYTResponse(
-        album=alb,
-        tracks=[AlbumTrackWithYT(**t) for t in result["tracks"]],
-        source=result["source"],
-    )
-
-
-@router.get("/album/{album_id}/tracks", response_model=AlbumTracksResponse)
-async def get_album_tracks(
-    album_id: str,
-    service: SearchService = Depends(get_search_service),
-):
-    """Get ONLY tracks from a specific album (no live/cover duplicates from other albums)."""
-    album = await service.get_album_by_id(album_id)
-    if not album:
-        raise HTTPException(404, "Album not found")
-    tracks = await service.get_album_tracks(album_id)
     return AlbumTracksResponse(
-        album=Album.model_validate(album.__dict__),
-        tracks=[Track.model_validate(t.__dict__) for t in tracks]
+        album=Album.model_validate(alb),
+        tracks=[Track(**t) for t in result["tracks"]],
     )
 
 

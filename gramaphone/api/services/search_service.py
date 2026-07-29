@@ -169,8 +169,8 @@ class SearchService:
     # ===== ALBUM TRACKS WITH YOUTUBE (AI-POWERED FALLBACK FOR ALL REGIONS) =====
 
     async def get_album_tracks_with_youtube(self, query: str, artist: str = "") -> dict:
-        """Get album tracks with best YouTube versions.
-        Tries iTunes first, falls back to YouTube playlist discovery for missing albums."""
+        """Get album tracks. Tries iTunes first (fast), falls back to YouTube playlist discovery (slow).
+        YouTube video IDs are NOT pre-resolved — resolved on-demand during playback."""
         album = None
         tracks = []
 
@@ -189,28 +189,29 @@ class SearchService:
             else:
                 return {"album": None, "tracks": [], "source": "none"}
 
-        semaphore = asyncio.Semaphore(5)
-
-        async def _fetch_yt(track):
-            async with semaphore:
-                yt = await asyncio.get_event_loop().run_in_executor(
-                    None, self._find_best_yt_sync, track.title, track.artist, track.duration_ms
-                )
-                return {
-                    "track_id": track.track_id,
-                    "title": track.title,
-                    "artist": track.artist,
-                    "duration_ms": track.duration_ms,
-                    "artwork_url": track.artwork_url,
-                    "track_number": getattr(track, "track_number", 0),
-                    "youtube_video_id": yt.get("video_id") if yt else None,
-                    "youtube_title": yt.get("title") if yt else None,
-                    "youtube_channel": yt.get("channel") if yt else None,
-                    "youtube_duration": yt.get("duration", 0) if yt else 0,
+        return {
+            "album": album,
+            "tracks": [
+                {
+                    "track_id": t.track_id,
+                    "title": t.title,
+                    "artist": t.artist,
+                    "album": getattr(t, "album", "") or getattr(album, "title", ""),
+                    "artist_id": getattr(t, "artist_id", ""),
+                    "album_id": getattr(t, "album_id", ""),
+                    "artwork_url": t.artwork_url,
+                    "duration_ms": t.duration_ms,
+                    "genre": getattr(t, "genre", ""),
+                    "release_date": getattr(t, "release_date", ""),
+                    "track_number": getattr(t, "track_number", 0),
+                    "disc_number": getattr(t, "disc_number", 1),
+                    "explicit": getattr(t, "explicit", False),
+                    "preview_url": getattr(t, "preview_url", None),
                 }
-
-        enriched = await asyncio.gather(*[_fetch_yt(t) for t in tracks])
-        return {"album": album, "tracks": enriched, "source": source}
+                for t in tracks
+            ],
+            "source": source,
+        }
 
     async def _discover_album_from_youtube(self, query: str, artist: str = "") -> tuple:
         """Discover album and tracks from YouTube when iTunes has no data."""

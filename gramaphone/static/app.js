@@ -80,7 +80,8 @@ function $(id) { return document.getElementById(id); }
 const player = {
     yt: null, track: null, queue: [], queueIndex: -1,
     played: false, progressTimer: null, autoplayTimer: null,
-    context: null, contextData: null
+    context: null, contextData: null,
+    _reqId: 0, _ytReady: false
 };
 
 function initYTPlayer() {
@@ -92,11 +93,16 @@ function initYTPlayer() {
             fs: 0, modestbranding: 1, rel: 0, iv_load_policy: 3
         },
         events: {
-            onReady: () => {},
+            onReady: () => { player._ytReady = true; },
             onStateChange: onPlayerStateChange,
             onError: onPlayerError
         }
     });
+}
+
+function loadVideo(videoId) {
+    if (!player.yt || !player.yt.loadVideoById) return;
+    try { player.yt.loadVideoById(videoId); } catch (e) {}
 }
 
 function onPlayerStateChange(e) {
@@ -114,21 +120,20 @@ function onPlayerStateChange(e) {
         if (player.track && player.played) {
             api.playTrack(player.track).catch(() => {});
         }
-        // Autoplay: song ended — play next (with 3s delay for independent)
-        playNextInQueue(false);
+        // Defer YT calls from state change callback (YouTube API requirement)
+        setTimeout(() => playNextInQueue(false), 100);
     } else if (e.data === YT.PlayerState.CUED) {
         $('player-play-btn').textContent = '▶';
     }
 }
 
 async function playNextInQueue(immediate = false) {
-    // If queue has more items, play next immediately
+    // Exhausted queue but still in album/playlist context? Keep fetching
     if (player.queue.length > 0 && player.queueIndex < player.queue.length - 1) {
         player.queueIndex++;
         showPlayer(player.queue[player.queueIndex]);
         return;
     }
-    // Queue exhausted — fetch YouTube Radio mix related tracks
     if (!player.track) return;
     const t = player.track;
     const name = t.title || t.track || t.track_name || '';
@@ -139,8 +144,11 @@ async function playNextInQueue(immediate = false) {
         const res = await fetch(`${API}/recommendations/related?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(name)}&duration_ms=${durMs}&limit=10`, {
             headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
         });
+        if (!res.ok) return;
         const data = await res.json();
-        const related = data.tracks || [];
+        let related = data.tracks || [];
+        // Don't play the same track again
+        related = related.filter(r => (r.title || '').toLowerCase() !== name.toLowerCase());
         if (!related.length) return;
         player.queue = related;
         player.queueIndex = 0;
@@ -171,13 +179,15 @@ function startProgressTimer() {
     stopProgressTimer();
     player.progressTimer = setInterval(() => {
         if (!player.yt || !player.yt.getCurrentTime) return;
-        const ct = player.yt.getCurrentTime();
-        const dur = player.yt.getDuration();
-        if (dur) {
-            $('player-progress').value = (ct / dur) * 100;
-            $('player-current').textContent = formatTime(ct);
-            $('player-duration').textContent = formatTime(dur);
-        }
+        try {
+            const ct = player.yt.getCurrentTime();
+            const dur = player.yt.getDuration();
+            if (dur) {
+                $('player-progress').value = (ct / dur) * 100;
+                $('player-current').textContent = formatTime(ct);
+                $('player-duration').textContent = formatTime(dur);
+            }
+        } catch (e) {}
     }, 500);
 }
 
@@ -207,6 +217,9 @@ function trackCardHtml(t, index, listId) {
 }
 
 function showPlayer(track) {
+    player._reqId++;
+    const reqId = player._reqId;
+
     $('player-bar').classList.remove('hidden');
     $('player-art').src = track.artwork_url || track.art_url || '';
     $('player-title').textContent = track.title || track.track || track.track_name || '';
@@ -218,28 +231,44 @@ function showPlayer(track) {
     player.track = track;
     player.played = false;
 
-    if (typeof YT === 'undefined' || !YT.Player) { return; }
+    if (typeof YT === 'undefined' || !YT.Player) {
+        // Retry in 500ms if API hasn't loaded yet
+        const retryTimer = setInterval(() => {
+            if (typeof YT !== 'undefined' && YT.Player && reqId === player._reqId) {
+                clearInterval(retryTimer);
+                initYTPlayer();
+                tryLoadVideo(track, reqId);
+            }
+        }, 200);
+        setTimeout(() => clearInterval(retryTimer), 5000);
+        return;
+    }
     initYTPlayer();
+    tryLoadVideo(track, reqId);
+}
 
+function tryLoadVideo(track, reqId) {
     const videoId = track.video_id || track.youtube_video_id;
     if (videoId) {
-        if (player.yt && player.yt.loadVideoById) {
-            player.yt.loadVideoById(videoId);
-        }
-    } else {
-        const name = track.title || track.track || track.track_name || '';
-        const artist = track.artist || track.artist_name || '';
-        const album = track.album || track.collection_name || '';
-        const durMs = track.duration_ms || 0;
-        fetch(`${API}/search/youtube/versions?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(name)}&album=${encodeURIComponent(album)}&duration_ms=${durMs}`, {
-            headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-        }).then(r => r.json()).then(data => {
-            const best = data.best_version;
-            if (best && best.video_id && player.yt && player.yt.loadVideoById) {
-                player.yt.loadVideoById(best.video_id);
-            }
-        }).catch(() => {});
+        setTimeout(() => {
+            if (reqId === player._reqId) loadVideo(videoId);
+        }, 50);
+        return;
     }
+    // No video_id — resolve via YT search (async)
+    const name = track.title || track.track || track.track_name || '';
+    const artist = track.artist || track.artist_name || '';
+    const album = track.album || track.collection_name || '';
+    const durMs = track.duration_ms || 0;
+    if (!name && !artist) return;
+    fetch(`${API}/search/youtube/versions?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(name)}&album=${encodeURIComponent(album)}&duration_ms=${durMs}`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+    }).then(r => r.json()).then(data => {
+        const best = data.best_version;
+        if (best && best.video_id && reqId === player._reqId) {
+            loadVideo(best.video_id);
+        }
+    }).catch(() => {});
 }
 
 async function playTrackInYT(track, el) {
@@ -288,14 +317,7 @@ $('player-progress').addEventListener('input', function () {
     }
 });
 
-$('player-prev').addEventListener('click', () => {
-    if (player.queue.length && player.queueIndex > 0) {
-        player.queueIndex--;
-        showPlayer(player.queue[player.queueIndex]);
-    }
-});
 $('player-next').addEventListener('click', () => {
-    // Clear autoplay timer if one is running (skip the wait)
     if (player.autoplayTimer) {
         clearTimeout(player.autoplayTimer);
         player.autoplayTimer = null;
@@ -305,6 +327,14 @@ $('player-next').addEventListener('click', () => {
         showPlayer(player.queue[player.queueIndex]);
     } else {
         playNextInQueue(true);
+    }
+});
+
+// Also wire prev button properly
+$('player-prev').addEventListener('click', () => {
+    if (player.queue.length && player.queueIndex > 0) {
+        player.queueIndex--;
+        showPlayer(player.queue[player.queueIndex]);
     }
 });
 

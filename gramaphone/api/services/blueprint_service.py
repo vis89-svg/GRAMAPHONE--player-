@@ -100,32 +100,31 @@ class BlueprintService:
         """Generate daily blueprint with quota check."""
         today = date.today()
         
-        # Check existing
-        existing = await db.execute(
-            select(DailyBlueprint).where(
-                DailyBlueprint.profile_id == profile_id,
-                DailyBlueprint.date == today
-            )
-        )
-        bp = existing.scalar_one_or_none()
-        if bp:
-            return bp
-
-        # Check quota
-        if not await self._check_quota(profile_id):
-            # Fallback: rule-based blueprint
-            return await self._generate_fallback_blueprint(db, profile_id)
-
-        # Gather context
-        context = await self._gather_context(db, profile_id)
-        
-        # Generate via LLM
-        prompt = USER_PROMPT_TEMPLATE.format(
-            today=today.isoformat(),
-            **context
-        )
-        
         try:
+            # Check existing
+            existing = await db.execute(
+                select(DailyBlueprint).where(
+                    DailyBlueprint.profile_id == profile_id,
+                    DailyBlueprint.date == today
+                )
+            )
+            bp = existing.scalar_one_or_none()
+            if bp:
+                return bp
+
+            # Check quota
+            if not await self._check_quota(profile_id):
+                return await self._generate_fallback_blueprint(db, profile_id)
+
+            # Gather context
+            context = await self._gather_context(db, profile_id)
+            
+            # Generate via LLM
+            prompt = USER_PROMPT_TEMPLATE.format(
+                today=today.isoformat(),
+                **context
+            )
+            
             client = self._get_client()
             if not client:
                 return await self._generate_fallback_blueprint(db, profile_id)
@@ -170,14 +169,38 @@ class BlueprintService:
             return await self._generate_fallback_blueprint(db, profile_id)
 
     async def _gather_context(self, db: AsyncSession, profile_id: uuid.UUID) -> dict:
-        top_artists = await get_top_affinity_artists(db, profile_id, 10)
-        top_genres = await get_taste_profile(db, profile_id, 5)
-        recent_plays = await get_recent_plays(db, profile_id, 30)
-        completion_rate, skip_rate = await get_completion_stats(db, profile_id)
-        tod_prefs = await get_tod_genres(db, profile_id)
-        active_playlists = await get_active_playlists(db, profile_id)
-        streak = await get_listening_streak(db, profile_id)
-        collab_recs = await get_collaborative_recommendations(db, profile_id, 3)
+        try:
+            top_artists = await get_top_affinity_artists(db, profile_id, 10)
+        except Exception:
+            top_artists = []
+        try:
+            top_genres = await get_taste_profile(db, profile_id, 5)
+        except Exception:
+            top_genres = []
+        try:
+            recent_plays = await get_recent_plays(db, profile_id, 30)
+        except Exception:
+            recent_plays = []
+        try:
+            completion_rate, skip_rate = await get_completion_stats(db, profile_id)
+        except Exception:
+            completion_rate, skip_rate = 0.0, 0.0
+        try:
+            tod_prefs = await get_tod_genres(db, profile_id)
+        except Exception:
+            tod_prefs = []
+        try:
+            active_playlists = await get_active_playlists(db, profile_id)
+        except Exception:
+            active_playlists = []
+        try:
+            streak = await get_listening_streak(db, profile_id)
+        except Exception:
+            streak = 0
+        try:
+            collab_recs = await get_collaborative_recommendations(db, profile_id, 3)
+        except Exception:
+            collab_recs = []
 
         return {
             "top_artists": json.dumps(top_artists),
@@ -229,37 +252,39 @@ class BlueprintService:
 
     async def _generate_fallback_blueprint(self, db: AsyncSession, profile_id: uuid.UUID) -> DailyBlueprint:
         """Rule-based blueprint when LLM quota exhausted."""
-        context = await self._gather_context(db, profile_id)
-        
-        # Simple rule-based strategy
-        top_artists = json.loads(context["top_artists"])
-        top_genres = json.loads(context["top_genres"])
-        recent = json.loads(context["recent_plays"])
-        
-        # Build seed tracks from top artists + recent
+        try:
+            context = await self._gather_context(db, profile_id)
+            top_artists = json.loads(context.get("top_artists", "[]"))
+            top_genres = json.loads(context.get("top_genres", "[]"))
+        except Exception:
+            top_artists = []
+            top_genres = []
+
         seeds = []
-        for i, artist in enumerate(top_artists[:5]):
-            seeds.append({
-                "track": f"Top track by {artist['artist_name']}",
-                "artist": artist['artist_name'],
-                "slot": "morning_anchor" if i == 0 else "focus_deep",
-                "reason": f"High affinity ({artist['affinity_score']:.0f})"
-            })
-        
-        for genre in top_genres[:2]:
-            seeds.append({
-                "track": f"Discovery: {genre['genre']}",
-                "artist": "Various",
-                "slot": "discovery_genre",
-                "reason": f"Top genre ({genre['percentage']:.1f}%)"
-            })
+        try:
+            for i, artist in enumerate(top_artists[:5]):
+                seeds.append({
+                    "track": f"Top track by {artist['artist_name']}",
+                    "artist": artist['artist_name'],
+                    "slot": "morning_anchor" if i == 0 else "focus_deep",
+                    "reason": f"High affinity ({artist.get('affinity_score', 0):.0f})"
+                })
+            for genre in top_genres[:2]:
+                seeds.append({
+                    "track": f"Discovery: {genre['genre']}",
+                    "artist": "Various",
+                    "slot": "discovery_genre",
+                    "reason": f"Top genre ({genre.get('percentage', 0):.1f}%)"
+                })
+        except Exception:
+            pass
 
         bp = DailyBlueprint(
             profile_id=profile_id,
             date=date.today(),
             strategy={
                 "mood_arc": ["energetic_morning", "focus_afternoon", "wind_down_evening"],
-                "focus_genres": [g["genre"] for g in top_genres[:3]],
+                "focus_genres": [g.get("genre", "Unknown") for g in top_genres[:3]],
                 "discovery_ratio": 0.2,
                 "repeat_comfort_ratio": 0.3,
                 "new_artist_exploration": ["Similar to top artists", "Genre deep cuts"]

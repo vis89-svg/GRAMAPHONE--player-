@@ -73,12 +73,15 @@ function showError(el, msg) { el.textContent = msg; el.classList.remove('hidden'
 function hideError(el) { el.classList.add('hidden'); }
 function $(id) { return document.getElementById(id); }
 
-function trackCardHtml(t, onclick) {
+// ===== AUDIO PLAYER STATE =====
+const player = { audio: null, track: null, played: false };
+
+function trackCardHtml(t, index, listId) {
     const title = t.title || t.track || t.track_name || 'Unknown';
     const artist = t.artist || t.artist_name || 'Unknown';
     const album = t.album || t.collection_name || '';
     const art = t.artwork_url || t.art_url || '';
-    return `<div class="track-card clickable" onclick="${onclick}">
+    return `<div class="track-card clickable" data-index="${index}" data-list="${listId}">
         ${art ? `<div class="track-art-wrap"><img src="${art}" alt=""><div class="play-overlay">&#9654;</div></div>` : '<div class="track-art-wrap no-art"><div class="play-overlay">&#9654;</div></div>'}
         <div class="track-info">
             <div class="track-title">${title}</div>
@@ -88,13 +91,105 @@ function trackCardHtml(t, onclick) {
     </div>`;
 }
 
-async function playTrack(t) {
-    try {
-        await api.playTrack(t);
-    } catch (e) {
-        console.warn('Play log failed:', e);
+function formatTime(s) {
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+}
+
+function showPlayer(track) {
+    const bar = $('player-bar');
+    bar.classList.remove('hidden');
+    $('player-art').src = track.artwork_url || track.art_url || '';
+    $('player-title').textContent = track.title || track.track || track.track_name || '';
+    $('player-artist').textContent = track.artist || track.artist_name || '';
+    $('player-play-btn').textContent = '▶';
+    $('player-progress').value = 0;
+    $('player-current').textContent = '0:00';
+    $('player-duration').textContent = '0:00';
+    player.track = track;
+    player.played = false;
+    const audio = $('player-audio');
+    audio.src = '';
+    const preview = track.preview_url;
+    if (preview) {
+        audio.src = preview;
+        audio.load();
+        audio.play().then(() => {
+            player.played = true;
+            $('player-play-btn').textContent = '⏸';
+        }).catch(() => {});
     }
 }
+
+$('player-play-btn').addEventListener('click', () => {
+    const audio = $('player-audio');
+    if (audio.paused) {
+        audio.play().then(() => { $('player-play-btn').textContent = '⏸'; }).catch(() => {});
+    } else {
+        audio.pause();
+        $('player-play-btn').textContent = '▶';
+    }
+});
+
+$('player-progress').addEventListener('input', function () {
+    const audio = $('player-audio');
+    if (audio.duration) {
+        audio.currentTime = (this.value / 100) * audio.duration;
+    }
+});
+
+$('player-audio').addEventListener('timeupdate', function () {
+    if (this.duration) {
+        const pct = (this.currentTime / this.duration) * 100;
+        $('player-progress').value = pct;
+        $('player-current').textContent = formatTime(this.currentTime);
+        $('player-duration').textContent = formatTime(this.duration);
+    }
+});
+
+$('player-audio').addEventListener('ended', async function () {
+    $('player-play-btn').textContent = '▶';
+    $('player-progress').value = 0;
+    if (player.track && player.played) {
+        try {
+            await api.playTrack(player.track);
+        } catch (e) { console.warn('Log failed:', e); }
+    }
+});
+
+$('player-audio').addEventListener('pause', function () {
+    if (!this.ended) $('player-play-btn').textContent = '▶';
+});
+
+$('player-audio').addEventListener('play', function () {
+    $('player-play-btn').textContent = '⏸';
+});
+
+$('player-close').addEventListener('click', () => {
+    const audio = $('player-audio');
+    audio.pause();
+    audio.src = '';
+    $('player-bar').classList.add('hidden');
+    player.track = null;
+});
+
+// Track click delegation
+document.addEventListener('click', e => {
+    const card = e.target.closest('.track-card.clickable');
+    if (!card) return;
+    const listId = card.dataset.list;
+    const index = parseInt(card.dataset.index);
+    let tracks = [];
+    if (listId === 'search') tracks = window._searchTracks || [];
+    else if (listId === 'blueprint') tracks = window._blueprintTracks || [];
+    else if (listId === 'playlist') tracks = window._playlistTracks || [];
+    const t = tracks[index];
+    if (t) {
+        card.classList.add('played');
+        showPlayer(t);
+    }
+});
 
 // ===== AUTH =====
 let isLogin = true;
@@ -153,10 +248,11 @@ async function loadDashboard() {
             `;
 
             const tracks = bp.seed_tracks || [];
+            window._blueprintTracks = tracks;
             $('blueprint-tracks').innerHTML = `
                 <h3>Seed Tracks (${tracks.length})</h3>
-                <div class="results-grid">${tracks.map(t =>
-                    trackCardHtml(t, `playTrack(${JSON.stringify(t).replace(/"/g,'&quot;')});this.classList.add('played')`)
+                <div class="results-grid">${tracks.map((t, i) =>
+                    trackCardHtml(t, i, 'blueprint')
                 ).join('')}</div>
             `;
         } else {
@@ -200,8 +296,9 @@ $('search-form').addEventListener('submit', async e => {
     try {
         const data = await api.search(q, album);
         const tracks = data.tracks || data || [];
-        $('search-results').innerHTML = tracks.length ? tracks.map(t =>
-            trackCardHtml(t, `playTrack(${JSON.stringify(t).replace(/"/g,'&quot;')});this.classList.add('played')`)
+        window._searchTracks = tracks;
+        $('search-results').innerHTML = tracks.length ? tracks.map((t, i) =>
+            trackCardHtml(t, i, 'search')
         ).join('') : '<p>No results found</p>';
     } catch (e) {
         $('search-results').innerHTML = `<p class="error">Search failed: ${e.message}</p>`;
@@ -256,8 +353,9 @@ async function showPlaylistDetail(id) {
         const pl = data.playlist || data;
         $('playlist-detail-title').textContent = pl.name || 'Playlist';
         const tracks = pl.tracks || [];
-        $('playlist-tracks').innerHTML = tracks.length ? tracks.map(t =>
-            trackCardHtml(t, `playTrack(${JSON.stringify(t).replace(/"/g,'&quot;')});this.classList.add('played')`)
+        window._playlistTracks = tracks;
+        $('playlist-tracks').innerHTML = tracks.length ? tracks.map((t, i) =>
+            trackCardHtml(t, i, 'playlist')
         ).join('') : '<p>Empty playlist</p>';
     } catch (e) {
         $('playlist-tracks').innerHTML = `<p class="error">Failed to load playlist</p>`;

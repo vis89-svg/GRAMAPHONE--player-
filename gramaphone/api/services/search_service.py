@@ -4,6 +4,7 @@ import asyncio
 from typing import Optional
 from dataclasses import dataclass
 from api.config import settings
+from yt_dlp import YoutubeDL
 
 
 @dataclass
@@ -164,6 +165,190 @@ class SearchService:
         except Exception:
             pass
         return None
+
+    # ===== ALBUM TRACKS WITH YOUTUBE (AI-POWERED FALLBACK FOR ALL REGIONS) =====
+
+    async def get_album_tracks_with_youtube(self, query: str, artist: str = "") -> dict:
+        """Get album tracks with best YouTube versions.
+        Tries iTunes first, falls back to YouTube playlist discovery for missing albums."""
+        album = None
+        tracks = []
+
+        if query.isdigit():
+            album = await self.get_album_by_id(query)
+            if album:
+                tracks = await self.get_album_tracks(query)
+
+        if album:
+            source = "itunes"
+        else:
+            result = await self._discover_album_from_youtube(query, artist)
+            if result:
+                album, tracks = result
+                source = "youtube"
+            else:
+                return {"album": None, "tracks": [], "source": "none"}
+
+        semaphore = asyncio.Semaphore(5)
+
+        async def _fetch_yt(track):
+            async with semaphore:
+                yt = await asyncio.get_event_loop().run_in_executor(
+                    None, self._find_best_yt_sync, track.title, track.artist, track.duration_ms
+                )
+                return {
+                    "track_id": track.track_id,
+                    "title": track.title,
+                    "artist": track.artist,
+                    "duration_ms": track.duration_ms,
+                    "artwork_url": track.artwork_url,
+                    "track_number": getattr(track, "track_number", 0),
+                    "youtube_video_id": yt.get("video_id") if yt else None,
+                    "youtube_title": yt.get("title") if yt else None,
+                    "youtube_channel": yt.get("channel") if yt else None,
+                    "youtube_duration": yt.get("duration", 0) if yt else 0,
+                }
+
+        enriched = await asyncio.gather(*[_fetch_yt(t) for t in tracks])
+        return {"album": album, "tracks": enriched, "source": source}
+
+    async def _discover_album_from_youtube(self, query: str, artist: str = "") -> tuple:
+        """Discover album and tracks from YouTube when iTunes has no data."""
+        search_term = f"{query} {artist} playlist".strip()
+        ydl_opts = {
+            "quiet": True, "extract_flat": True,
+            "skip_download": True, "no_warnings": True,
+        }
+
+        def _search():
+            with YoutubeDL(ydl_opts) as ydl:
+                for attempt in [f"{query} {artist} album", f"{query} {artist}", query]:
+                    term = attempt.strip()
+                    if not term:
+                        continue
+                    try:
+                        result = ydl.extract_info(f"ytsearch10:{term}", download=False)
+                        entries = result.get("entries", []) if result else []
+                        for e in entries:
+                            if e and e.get("ie_key") == "YoutubePlaylist":
+                                return ("playlist", e)
+                        for e in entries:
+                            if e and e.get("_type") == "playlist":
+                                return ("playlist", e)
+                        for e in entries:
+                            if e and e.get("title"):
+                                t = (e.get("title") or "").lower()
+                                if "full album" in t or "complete album" in t:
+                                    return ("video", e)
+                    except Exception:
+                        continue
+                return (None, None)
+
+        def _extract_playlist(pl_entry):
+            pl_id = pl_entry["id"]
+            with YoutubeDL({**ydl_opts, "extract_flat": True}) as ydl:
+                pl = ydl.extract_info(
+                    f"https://www.youtube.com/playlist?list={pl_id}",
+                    download=False
+                )
+                if pl and pl.get("entries"):
+                    entries = pl["entries"]
+                    artist_name = artist or pl.get("channel", "") or pl.get("uploader", "")
+                    album_obj = type("AlbumObj", (), {
+                        "album_id": pl_id, "title": query, "artist": artist_name,
+                        "artist_id": "", "artwork_url": "", "release_date": "",
+                        "track_count": len(entries), "genre": "", "copyright": "",
+                        "__dict__": {}
+                    })()
+                    album_obj.__dict__ = {
+                        "album_id": pl_id, "title": pl.get("title", query),
+                        "artist": artist_name, "artist_id": "",
+                        "artwork_url": entries[0].get("thumbnail", "") if entries else "",
+                        "release_date": "", "track_count": len(entries),
+                        "genre": "", "copyright": "",
+                    }
+                    tracks = []
+                    for i, e in enumerate(entries):
+                        tr = type("TrackObj", (), {
+                            "track_id": e.get("id", f"yt_{i}"),
+                            "title": e.get("title", "").split(" - ")[-1] if " - " in (e.get("title","")) else e.get("title", ""),
+                            "artist": e.get("channel", "") or e.get("uploader", "") or artist_name,
+                            "album": pl.get("title", query),
+                            "artist_id": "", "album_id": pl_id,
+                            "artwork_url": e.get("thumbnail", ""),
+                            "duration_ms": (e.get("duration") or 0) * 1000,
+                            "genre": "", "release_date": "",
+                            "track_number": i + 1, "disc_number": 1,
+                            "explicit": False, "preview_url": None,
+                            "__dict__": {}
+                        })()
+                        tr.__dict__ = {
+                            "track_id": e.get("id", f"yt_{i}"),
+                            "title": e.get("title", "").split(" - ")[-1] if " - " in (e.get("title","")) else e.get("title", ""),
+                            "artist": e.get("channel", "") or e.get("uploader", "") or artist_name,
+                            "album": pl.get("title", query),
+                            "artist_id": "", "album_id": pl_id,
+                            "artwork_url": e.get("thumbnail", ""),
+                            "duration_ms": (e.get("duration") or 0) * 1000,
+                            "genre": "", "release_date": "",
+                            "track_number": i + 1, "disc_number": 1,
+                            "explicit": False, "preview_url": None,
+                        }
+                        tracks.append(tr)
+                    return album_obj, tracks
+            return None, []
+
+        kind, entry = await asyncio.get_event_loop().run_in_executor(None, _search)
+        if kind == "playlist" and entry:
+            return await asyncio.get_event_loop().run_in_executor(None, _extract_playlist, entry)
+        return None, []
+
+    def _find_best_yt_sync(self, title: str, artist: str, duration_ms: int) -> Optional[dict]:
+        """Synchronous YouTube search + scoring (runs in executor)."""
+        queries = [
+            f"{artist} {title} Topic",
+            f"{artist} {title} audio",
+            f"{artist} {title} official audio",
+            f"{artist} {title} lyrics",
+            f"{artist} {title}",
+        ]
+        all_results = []
+        ydl_opts = {
+            "quiet": True, "extract_flat": "in_playlist",
+            "skip_download": True, "no_warnings": True,
+        }
+        for q in queries:
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    result = ydl.extract_info(f"ytsearch5:{q}", download=False)
+                    if result and result.get("entries"):
+                        for e in result["entries"]:
+                            if e and e.get("id"):
+                                all_results.append({
+                                    "video_id": e["id"],
+                                    "title": e.get("title", ""),
+                                    "channel": e.get("channel", "") or e.get("uploader", ""),
+                                    "duration": e.get("duration", 0),
+                                    "thumbnail": e.get("thumbnail", ""),
+                                })
+            except Exception:
+                continue
+
+        seen = set()
+        unique = []
+        for r in all_results:
+            if r["video_id"] not in seen:
+                seen.add(r["video_id"])
+                # Block live/cover/remix (not just penalize)
+                tl = (r.get("title", "") + " " + (r.get("channel", "") or "")).lower()
+                blocked = ["live", "cover", "remix", "karaoke", "instrumental", "nightcore",
+                           "sped up", "sped-up", "slowed", "bass boosted", "8d audio", "reverb"]
+                if any(b in tl for b in blocked):
+                    continue
+                unique.append(r)
+
+        best = pick_best_yt_version(unique, duration_ms // 1000)
+        return best
 
     # ===== INTERNAL =====
 

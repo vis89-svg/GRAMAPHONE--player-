@@ -5,7 +5,8 @@ from api.dependencies.database import get_db
 from api.services.search_service import SearchService, pick_best_yt_version
 from api.schemas.search import (
     SearchResult, Track, Album, Artist, Playlist,
-    AlbumTracksResponse, YouTubeSearchResult, YouTubeVersion,
+    AlbumTracksResponse, AlbumWithYTResponse, AlbumTrackWithYT,
+    YouTubeSearchResult, YouTubeVersion,
     SearchSuggestionsResponse, SearchQuery
 )
 
@@ -52,6 +53,27 @@ async def search_all(
         albums=[Album.model_validate(a.__dict__) for a in results.get("albums", [])],
         artists=[Artist.model_validate(a.__dict__) for a in results.get("artists", [])],
         playlists=[Playlist.model_validate(p) if isinstance(p, dict) else Playlist.model_validate(p.__dict__) for p in results.get("playlists", [])],
+    )
+
+
+@router.get("/album/{album_id}/tracks-with-youtube", response_model=AlbumWithYTResponse)
+async def get_album_tracks_with_youtube(
+    album_id: str,
+    artist: str = Query(""),
+    service: SearchService = Depends(get_search_service),
+):
+    """Get album tracks with best YouTube versions.
+    Tries iTunes first. Falls back to YouTube playlist discovery for all regions/languages."""
+    result = await service.get_album_tracks_with_youtube(album_id, artist)
+    if not result["album"]:
+        raise HTTPException(404, "Album not found")
+    alb = result["album"]
+    if not isinstance(alb, dict):
+        alb = alb.__dict__
+    return AlbumWithYTResponse(
+        album=alb,
+        tracks=[AlbumTrackWithYT(**t) for t in result["tracks"]],
+        source=result["source"],
     )
 
 

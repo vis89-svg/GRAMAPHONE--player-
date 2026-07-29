@@ -67,6 +67,25 @@ class AlbumTracksResponse(BaseModel):
     tracks: List[Track]
 
 
+class AlbumTrackWithYT(BaseModel):
+    track_id: str = ""
+    title: str
+    artist: str = ""
+    duration_ms: int = 0
+    artwork_url: str = ""
+    track_number: int = 0
+    youtube_video_id: Optional[str] = None
+    youtube_title: Optional[str] = None
+    youtube_channel: Optional[str] = None
+    youtube_duration: int = 0
+
+
+class AlbumWithYTResponse(BaseModel):
+    album: Album
+    tracks: List[AlbumTrackWithYT]
+    source: str = "itunes"
+
+
 # ===== YOUTUBE MODELS =====
 
 class YouTubeVersion(BaseModel):

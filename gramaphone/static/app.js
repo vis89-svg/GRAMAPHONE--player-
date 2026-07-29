@@ -23,7 +23,8 @@ const api = {
     },
     blueprint: () => api.request('POST', '/blueprint/generate'),
     blueprintToday: () => api.request('GET', '/blueprint/today'),
-    search: (q, a) => api.request('GET', `/search?q=${encodeURIComponent(q)}${a ? '&album=' + encodeURIComponent(a) : ''}`),
+    search: (q) => api.request('GET', `/search?q=${encodeURIComponent(q)}&type=all`),
+    albumWithYT: (id, artist) => api.request('GET', `/search/album/${id}/tracks-with-youtube${artist ? '?artist=' + encodeURIComponent(artist) : ''}`),
     playTrack: (t) => api.request('POST', '/playback/complete', {
         track_id: t.track_id, title: t.title || t.track || t.track_name,
         artist: t.artist || t.artist_name, album: t.album || t.collection_name,
@@ -155,8 +156,7 @@ function trackCardHtml(t, index, listId) {
     </div>`;
 }
 
-async function playTrackInYT(track, el) {
-    if (el) el.classList.add('played');
+function showPlayer(track) {
     $('player-bar').classList.remove('hidden');
     $('player-art').src = track.artwork_url || track.art_url || '';
     $('player-title').textContent = track.title || track.track || track.track_name || '';
@@ -168,35 +168,33 @@ async function playTrackInYT(track, el) {
     player.track = track;
     player.played = false;
 
-    if (typeof YT === 'undefined' || !YT.Player) {
-        console.warn('YouTube API not loaded yet');
-        $('player-bar').classList.add('hidden');
-        return;
-    }
+    if (typeof YT === 'undefined' || !YT.Player) { return; }
     initYTPlayer();
 
-    try {
+    const videoId = track.video_id || track.youtube_video_id;
+    if (videoId) {
+        if (player.yt && player.yt.loadVideoById) {
+            player.yt.loadVideoById(videoId);
+        }
+    } else {
         const name = track.title || track.track || track.track_name || '';
         const artist = track.artist || track.artist_name || '';
         const album = track.album || track.collection_name || '';
         const durMs = track.duration_ms || 0;
-        const res = await fetch(`${API}/search/youtube/versions?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(name)}&album=${encodeURIComponent(album)}&duration_ms=${durMs}`, {
+        fetch(`${API}/search/youtube/versions?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(name)}&album=${encodeURIComponent(album)}&duration_ms=${durMs}`, {
             headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-        });
-        if (!res.ok) throw new Error('YT search failed');
-        const data = await res.json();
-        const best = data.best_version;
-        if (best && best.video_id) {
-            if (player.yt && player.yt.loadVideoById) {
+        }).then(r => r.json()).then(data => {
+            const best = data.best_version;
+            if (best && best.video_id && player.yt && player.yt.loadVideoById) {
                 player.yt.loadVideoById(best.video_id);
             }
-        } else {
-            throw new Error('No YouTube version found');
-        }
-    } catch (e) {
-        console.warn('YouTube playback failed:', e);
-        $('player-bar').classList.add('hidden');
+        }).catch(() => {});
     }
+}
+
+async function playTrackInYT(track, el) {
+    if (el) el.classList.add('played');
+    showPlayer(track);
 }
 
 $('player-play-btn').addEventListener('click', () => {
@@ -236,6 +234,7 @@ document.addEventListener('click', e => {
     if (listId === 'search') tracks = window._searchTracks || [];
     else if (listId === 'blueprint') tracks = window._blueprintTracks || [];
     else if (listId === 'playlist') tracks = window._playlistTracks || [];
+    else if (listId === 'album') tracks = window._albumTracks || [];
     const t = tracks[index];
     if (t) playTrackInYT(t, card);
 });
@@ -340,19 +339,147 @@ $('refresh-blueprint').addEventListener('click', async () => {
 $('search-form').addEventListener('submit', async e => {
     e.preventDefault();
     const q = $('search-query').value;
-    const album = $('search-album').value;
+    $('album-detail').classList.add('hidden');
+    $('search-results').classList.remove('hidden');
     $('search-results').innerHTML = '<div class="spinner"></div>';
     try {
-        const data = await api.search(q, album);
-        const tracks = data.tracks || data || [];
+        const data = await api.search(q);
+        const tracks = data.tracks || [];
+        const albums = data.albums || [];
+        const artists = data.artists || [];
+
         window._searchTracks = tracks;
-        $('search-results').innerHTML = tracks.length ? tracks.map((t, i) =>
-            trackCardHtml(t, i, 'search')
-        ).join('') : '<p>No results found</p>';
+        window._searchAlbums = albums;
+        window._searchArtists = artists;
+
+        let html = '';
+
+        if (albums.length) {
+            html += `<h3 style="margin:16px 0 8px;font-size:1.1rem;color:var(--accent);">Albums</h3>
+            <div class="results-grid">${albums.map((a, i) => `
+                <div class="album-card clickable" data-album-index="${i}" data-album-list="search">
+                    ${a.artwork_url ? `<img src="${a.artwork_url}" alt="" class="album-art">` : '<div class="album-art no-art">📀</div>'}
+                    <div class="album-info">
+                        <div class="album-title">${a.title}</div>
+                        <div class="album-artist">${a.artist}</div>
+                        <div class="album-meta">${a.track_count || '?'} tracks</div>
+                    </div>
+                </div>
+            `).join('')}</div>`;
+        }
+
+        if (artists.length) {
+            html += `<h3 style="margin:16px 0 8px;font-size:1.1rem;color:var(--accent);">Artists</h3>
+            <div class="results-grid">${artists.map((a, i) => `
+                <div class="artist-card">
+                    ${a.artwork_url ? `<img src="${a.artwork_url}" alt="" class="artist-art">` : '<div class="artist-art no-art">🎤</div>'}
+                    <div class="artist-name">${a.name}</div>
+                    <div class="artist-genre">${a.genre || ''}</div>
+                </div>
+            `).join('')}</div>`;
+        }
+
+        if (tracks.length) {
+            html += `<h3 style="margin:16px 0 8px;font-size:1.1rem;color:var(--accent);">Tracks</h3>
+            <div class="results-grid">${tracks.map((t, i) =>
+                trackCardHtml(t, i, 'search')
+            ).join('')}</div>`;
+        }
+
+        $('search-results').innerHTML = html || '<p>No results found</p>';
     } catch (e) {
         $('search-results').innerHTML = `<p class="error">Search failed: ${e.message}</p>`;
     }
 });
+
+// Album click → fetch tracks with YouTube versions
+document.addEventListener('click', e => {
+    const card = e.target.closest('.album-card.clickable');
+    if (!card) return;
+    const idx = parseInt(card.dataset.albumIndex);
+    const list = card.dataset.albumList;
+    let albums = [];
+    if (list === 'search') albums = window._searchAlbums || [];
+    const album = albums[idx];
+    if (!album) return;
+    loadAlbumDetail(album);
+});
+
+async function loadAlbumDetail(album) {
+    $('search-results').classList.add('hidden');
+    $('album-detail').classList.remove('hidden');
+    $('album-detail').innerHTML = '<div class="spinner"></div>';
+    try {
+        const data = await api.albumWithYT(album.album_id, album.artist);
+        const a = data.album;
+        const tracks = data.tracks || [];
+
+        window._albumTracks = tracks;
+
+        $('album-detail').innerHTML = `
+            <button id="back-to-results" class="btn" style="margin-bottom:16px;">← Back to results</button>
+            <div class="album-header">
+                <div class="album-header-art">
+                    ${a.artwork_url ? `<img src="${a.artwork_url}" alt="">` : '<div class="no-art big">📀</div>'}
+                </div>
+                <div class="album-header-info">
+                    <div class="album-header-title">${a.title}</div>
+                    <div class="album-header-artist">${a.artist}</div>
+                    <div class="album-header-meta">${tracks.length} tracks · ${a.release_date || ''} · ${a.genre || ''}</div>
+                </div>
+            </div>
+            <div class="album-tracks">
+                ${tracks.length ? tracks.map((t, i) => {
+                    const hasYT = t.youtube_video_id ? true : false;
+                    return `<div class="track-card clickable album-track" data-index="${i}" data-list="album">
+                        <div class="track-num">${i + 1}</div>
+                        <div class="track-info">
+                            <div class="track-title">${t.title}</div>
+                            <div class="track-artist">${t.artist || a.artist}</div>
+                        </div>
+                        <div class="track-duration">${formatTime(t.duration_ms / 1000)}</div>
+                        ${hasYT ? '<div class="track-yt-indicator">▶</div>' : '<div class="track-yt-indicator na">—</div>'}
+                    </div>`;
+                }).join('') : '<p>No tracks found</p>'}
+            </div>
+        `;
+
+        // Handle track clicks in album
+        document.querySelectorAll('.album-track').forEach(el => {
+            el.addEventListener('click', () => {
+                const idx = parseInt(el.dataset.index);
+                const t = window._albumTracks[idx];
+                if (t && t.youtube_video_id) {
+                    el.classList.add('played');
+                    showPlayer({
+                        title: t.title,
+                        artist: t.artist,
+                        artwork_url: album.artwork_url || '',
+                        track_id: t.track_id,
+                        duration_ms: t.duration_ms,
+                        video_id: t.youtube_video_id,
+                    });
+                }
+            });
+        });
+
+        document.getElementById('back-to-results').addEventListener('click', () => {
+            $('album-detail').classList.add('hidden');
+            $('search-results').classList.remove('hidden');
+        });
+
+    } catch (e) {
+        $('album-detail').innerHTML = `<p class="error">Failed to load album: ${e.message}</p>
+            <button id="back-to-results" class="btn" style="margin-top:16px;">← Back to results</button>`;
+        setTimeout(() => {
+            const btn = document.getElementById('back-to-results');
+            if (btn) btn.addEventListener('click', () => {
+                $('album-detail').classList.add('hidden');
+                $('search-results').classList.remove('hidden');
+            });
+        }, 100);
+    }
+}
 
 // ===== PLAYLISTS =====
 let currentPlaylistId = null;

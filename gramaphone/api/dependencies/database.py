@@ -1,17 +1,27 @@
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.pool import NullPool
 from api.config import settings
 from api.models import Base
 
 
-_connect_args = {}
-if "sqlite" in settings.DATABASE_URL:
-    _connect_args["check_same_thread"] = False
+db_url = settings.DATABASE_URL
 
+_connect_args = {}
+if "sqlite" in db_url:
+    _connect_args["check_same_thread"] = False
+else:
+    parsed = urlparse(db_url)
+    params = parse_qs(parsed.query)
+    ssl_mode = params.pop("sslmode", None)
+    if ssl_mode:
+        _connect_args["ssl"] = ssl_mode[0]
+        parsed = parsed._replace(query=urlencode(params, doseq=True))
+        db_url = urlunparse(parsed)
 
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    db_url,
     echo=settings.DEBUG,
     poolclass=NullPool if settings.APP_ENV == "test" else None,
     pool_pre_ping=True,

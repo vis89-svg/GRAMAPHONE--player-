@@ -144,6 +144,9 @@ button[type="submit"]:hover, .btn:hover { opacity: 0.85; }
 #player-progress::-moz-range-thumb { width: 12px; height: 12px; border-radius: 50%; background: var(--accent); border: none; }
 #player-close { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 1rem; padding: 4px 8px; }
 #player-close:hover { color: var(--text); }
+.player-right { flex: 0 0 60px; display: flex; justify-content: flex-end; }
+
+#youtube-player { position: absolute; width: 0; height: 0; overflow: hidden; }
 
 main { padding-bottom: 80px; }
 

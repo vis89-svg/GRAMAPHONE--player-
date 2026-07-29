@@ -73,8 +73,72 @@ function showError(el, msg) { el.textContent = msg; el.classList.remove('hidden'
 function hideError(el) { el.classList.add('hidden'); }
 function $(id) { return document.getElementById(id); }
 
-// ===== AUDIO PLAYER STATE =====
-const player = { audio: null, track: null, played: false };
+// ===== YOUTUBE PLAYER (Spotify-style, audio only) =====
+const player = { yt: null, track: null, queue: [], queueIndex: -1, played: false, progressTimer: null };
+
+function initYTPlayer() {
+    if (player.yt) return;
+    player.yt = new YT.Player('youtube-player', {
+        height: '240', width: '320',
+        playerVars: {
+            autoplay: 0, controls: 0, disablekb: 1,
+            fs: 0, modestbranding: 1, rel: 0, iv_load_policy: 3
+        },
+        events: {
+            onReady: () => {},
+            onStateChange: onPlayerStateChange,
+            onError: onPlayerError
+        }
+    });
+}
+
+function onPlayerStateChange(e) {
+    if (e.data === YT.PlayerState.PLAYING) {
+        player.played = true;
+        $('player-play-btn').textContent = '⏸';
+        if (!player.progressTimer) startProgressTimer();
+    } else if (e.data === YT.PlayerState.PAUSED) {
+        $('player-play-btn').textContent = '▶';
+    } else if (e.data === YT.PlayerState.ENDED) {
+        $('player-play-btn').textContent = '▶';
+        $('player-progress').value = 0;
+        $('player-current').textContent = '0:00';
+        stopProgressTimer();
+        if (player.track && player.played) {
+            api.playTrack(player.track).catch(() => {});
+        }
+    } else if (e.data === YT.PlayerState.CUED) {
+        $('player-play-btn').textContent = '▶';
+    }
+}
+
+function onPlayerError(e) {
+    console.warn('YouTube error:', e.data);
+}
+
+function startProgressTimer() {
+    stopProgressTimer();
+    player.progressTimer = setInterval(() => {
+        if (!player.yt || !player.yt.getCurrentTime) return;
+        const ct = player.yt.getCurrentTime();
+        const dur = player.yt.getDuration();
+        if (dur) {
+            $('player-progress').value = (ct / dur) * 100;
+            $('player-current').textContent = formatTime(ct);
+            $('player-duration').textContent = formatTime(dur);
+        }
+    }, 500);
+}
+
+function stopProgressTimer() {
+    if (player.progressTimer) { clearInterval(player.progressTimer); player.progressTimer = null; }
+}
+
+function formatTime(s) {
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+}
 
 function trackCardHtml(t, index, listId) {
     const title = t.title || t.track || t.track_name || 'Unknown';
@@ -91,15 +155,9 @@ function trackCardHtml(t, index, listId) {
     </div>`;
 }
 
-function formatTime(s) {
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, '0')}`;
-}
-
-function showPlayer(track) {
-    const bar = $('player-bar');
-    bar.classList.remove('hidden');
+async function playTrackInYT(track, el) {
+    if (el) el.classList.add('played');
+    $('player-bar').classList.remove('hidden');
     $('player-art').src = track.artwork_url || track.art_url || '';
     $('player-title').textContent = track.title || track.track || track.track_name || '';
     $('player-artist').textContent = track.artist || track.artist_name || '';
@@ -109,67 +167,61 @@ function showPlayer(track) {
     $('player-duration').textContent = '0:00';
     player.track = track;
     player.played = false;
-    const audio = $('player-audio');
-    audio.src = '';
-    const preview = track.preview_url;
-    if (preview) {
-        audio.src = preview;
-        audio.load();
-        audio.play().then(() => {
-            player.played = true;
-            $('player-play-btn').textContent = '⏸';
-        }).catch(() => {});
+
+    if (typeof YT === 'undefined' || !YT.Player) {
+        console.warn('YouTube API not loaded yet');
+        $('player-bar').classList.add('hidden');
+        return;
+    }
+    initYTPlayer();
+
+    try {
+        const name = track.title || track.track || track.track_name || '';
+        const artist = track.artist || track.artist_name || '';
+        const album = track.album || track.collection_name || '';
+        const durMs = track.duration_ms || 0;
+        const res = await fetch(`${API}/search/youtube/versions?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(name)}&album=${encodeURIComponent(album)}&duration_ms=${durMs}`, {
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        });
+        if (!res.ok) throw new Error('YT search failed');
+        const data = await res.json();
+        const best = data.best_version;
+        if (best && best.video_id) {
+            if (player.yt && player.yt.loadVideoById) {
+                player.yt.loadVideoById(best.video_id);
+            }
+        } else {
+            throw new Error('No YouTube version found');
+        }
+    } catch (e) {
+        console.warn('YouTube playback failed:', e);
+        $('player-bar').classList.add('hidden');
     }
 }
 
 $('player-play-btn').addEventListener('click', () => {
-    const audio = $('player-audio');
-    if (audio.paused) {
-        audio.play().then(() => { $('player-play-btn').textContent = '⏸'; }).catch(() => {});
+    if (!player.yt || !player.yt.getPlayerState) return;
+    const state = player.yt.getPlayerState();
+    if (state === YT.PlayerState.PLAYING) {
+        player.yt.pauseVideo();
     } else {
-        audio.pause();
-        $('player-play-btn').textContent = '▶';
+        player.yt.playVideo();
     }
 });
 
 $('player-progress').addEventListener('input', function () {
-    const audio = $('player-audio');
-    if (audio.duration) {
-        audio.currentTime = (this.value / 100) * audio.duration;
+    if (player.yt && player.yt.getDuration) {
+        const dur = player.yt.getDuration();
+        if (dur) player.yt.seekTo((this.value / 100) * dur, true);
     }
 });
 
-$('player-audio').addEventListener('timeupdate', function () {
-    if (this.duration) {
-        const pct = (this.currentTime / this.duration) * 100;
-        $('player-progress').value = pct;
-        $('player-current').textContent = formatTime(this.currentTime);
-        $('player-duration').textContent = formatTime(this.duration);
-    }
-});
-
-$('player-audio').addEventListener('ended', async function () {
-    $('player-play-btn').textContent = '▶';
-    $('player-progress').value = 0;
-    if (player.track && player.played) {
-        try {
-            await api.playTrack(player.track);
-        } catch (e) { console.warn('Log failed:', e); }
-    }
-});
-
-$('player-audio').addEventListener('pause', function () {
-    if (!this.ended) $('player-play-btn').textContent = '▶';
-});
-
-$('player-audio').addEventListener('play', function () {
-    $('player-play-btn').textContent = '⏸';
-});
+$('player-prev').addEventListener('click', () => {});
+$('player-next').addEventListener('click', () => {});
 
 $('player-close').addEventListener('click', () => {
-    const audio = $('player-audio');
-    audio.pause();
-    audio.src = '';
+    if (player.yt && player.yt.stopVideo) player.yt.stopVideo();
+    stopProgressTimer();
     $('player-bar').classList.add('hidden');
     player.track = null;
 });
@@ -185,10 +237,7 @@ document.addEventListener('click', e => {
     else if (listId === 'blueprint') tracks = window._blueprintTracks || [];
     else if (listId === 'playlist') tracks = window._playlistTracks || [];
     const t = tracks[index];
-    if (t) {
-        card.classList.add('played');
-        showPlayer(t);
-    }
+    if (t) playTrackInYT(t, card);
 });
 
 // ===== AUTH =====

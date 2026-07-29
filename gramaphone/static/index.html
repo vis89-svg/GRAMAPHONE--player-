@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gramaphone</title>
     <link rel="stylesheet" href="/style.css">
+    <script src="https://www.youtube.com/iframe_api"></script>
 </head>
 <body>
     <div id="app">
@@ -82,8 +83,9 @@
             </section>
         </main>
 
+        <div id="youtube-player"></div>
+
         <div id="player-bar" class="hidden">
-            <audio id="player-audio"></audio>
             <div class="player-left">
                 <img id="player-art" src="" alt="">
                 <div class="player-details">
@@ -93,7 +95,9 @@
             </div>
             <div class="player-center">
                 <div class="player-buttons">
+                    <button id="player-prev">⏮</button>
                     <button id="player-play-btn">▶</button>
+                    <button id="player-next">⏭</button>
                 </div>
                 <div class="player-progress-wrap">
                     <span id="player-current">0:00</span>
@@ -101,7 +105,9 @@
                     <span id="player-duration">0:00</span>
                 </div>
             </div>
-            <button id="player-close">✕</button>
+            <div class="player-right">
+                <button id="player-close">✕</button>
+            </div>
         </div>
     </div>
     <script src="/app.js"></script>

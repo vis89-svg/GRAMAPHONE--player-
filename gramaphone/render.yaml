@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: gramaphone-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r gramaphone/requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gramaphone-db
+          property: connectionString
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: GROQ_API_KEY
+        value: gsk_xxx
+      - key: ITUNES_BASE_URL
+        value: https://itunes.apple.com
+      - key: DEEZER_BASE_URL
+        value: https://api.deezer.com
+      - key: YTDLP_FORMAT
+        value: bestaudio
+      - key: RENDER_EXTERNAL_URL
+        fromService:
+          name: gramaphone-api
+          type: web
+          property: url
+
+databases:
+  - name: gramaphone-db
+    plan: free
+    databaseName: gramaphone
+    user: gramaphone

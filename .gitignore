@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.webm
+*.db
+
+# Env
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Flutter
+Gramaphone-main/tmp3_flutter/
+Gramaphone-main/.metadata
+
+# Legacy
+Gramaphone-main/music.db
+Gramaphone-main/build_app.ps1
+Gramaphone-main/dev_watcher.ps1
+Gramaphone-main/music_app.py
+Gramaphone-main/__pycache__/
+Gramaphone-main/*.webm

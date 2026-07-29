@@ -15,7 +15,7 @@ engine = create_async_engine(
     echo=settings.DEBUG,
     poolclass=NullPool if settings.APP_ENV == "test" else None,
     pool_pre_ping=True,
-    connect_args=_connect_args or None,
+    connect_args=_connect_args,
 )
 
 async_session_maker = async_sessionmaker(
